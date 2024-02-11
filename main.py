@@ -1,92 +1,97 @@
-import os
 import asyncio
+
 import aiofiles
+import os
+temperature_queue = asyncio.Queue()
+humidity_queue = asyncio.Queue()
+temperature_sum = 0
+humidity_sum = 0
+MAX_CONCURRENT_FILES = 10
 
 
-async def worker(name, queue):
-    while True:
-        # Get a "work item" out of the queue.
-        sleep_for = await queue.get()
-
-        # Sleep for the "sleep_for" seconds.
-        await asyncio.sleep(sleep_for)
-
-        # Notify the queue that the "work item" has been processed.
-        queue.task_done()
-
-        print(f"{name} has slept for {sleep_for:.2f} seconds.")
-
-
-async def test_queue():
-    # Create a queue that we will use to store our "workload".
-    queue = asyncio.Queue()
-
-    # Create three worker tasks to process the queue concurrently.
-    tasks = []
-    for i in range(3):
-        task = asyncio.create_task(worker(f"Worker-{i}", queue))
-        tasks.append(task)
-
-    # Wait until the queue is fully processed.
-    started_at = time.monotonic()
-    await queue.join()
-    total_slept_for = time.monotonic() - started_at
-
-    # Cancel our worker tasks.
-    for task in tasks:
-        task.cancel()
-
-    # Wait until all worker tasks are cancelled.
+async def process_file(path, temp_queue, hum_queue, sem):
     try:
-        await asyncio.gather(*tasks)
-    except asyncio.CancelledError:
-        print("All worker tasks were cancelled.")
-
-    print(f"3 workers slept in parallel for {total_slept_for:.2f} seconds.")
-    print(f"Total expected sleep time: {total_sleep_time:.2f} seconds.")
-
-
-async def process_file(filename):
-    async with aiofiles.open(filename, mode='r') as f:
-        async for line in f:
-            words = line.strip().split(';')
-            if len(words) == 2:
-                word1, word2 = words
-                print(f"First word: {word1}, Second word: {word2}")
-
-
-async def read_files_in_directory(directory):
-    tasks = []
-    async for file in aiofiles.os.listdir(directory):
-        filename = os.path.join(directory, file)
-        if os.path.isfile(filename):
-            for i in range(3):
-                task = asyncio.create_task(process_file(filename))
-                tasks.append(task)
-
-        tasks.append(process_file(filename))
-    await asyncio.gather(*tasks)
+        async with sem:
+            async with aiofiles.open(path) as f:
+                async for line in f:
+                    try:
+                        words = line.split(';')
+                        if len(words) == 2:
+                            temp, humidity = words
+                            await asyncio.wait_for(temp_queue.put(float(temp)), timeout=2)
+                            await asyncio.wait_for(hum_queue.put(float(humidity)), timeout=2)
+                    except asyncio.TimeoutError:
+                        print(f"Timeout reading line from file {path}. Skipping.")
+    except FileNotFoundError:
+        print(f"File {path} not found.")
+    finally:
+        os.remove(path)
 
 
-def process_data(filename):
-    queue_for_temperature = asyncio.Queue()
-    queue_for_humidity = asyncio.Queue()
+async def monitor_progress():
+    while True:
+        num_files = len(os.listdir('C:/Users/jferr/Desktop/PA/TP3/weather_files'))
+        print(f"There are {num_files} files left to process.")
+        await asyncio.sleep(1)
+        if num_files == 0:
+            break
 
-    queue.put_nowait(sleep_for)
 
-    async with aiofiles.open(filename, mode='r') as f:
-        async for line in f:
-            words = line.strip().split(';')
-            if len(words) == 2:
-                word1, word2 = words
-                print(f"First word: {word1}, Second word: {word2}")
-    os.remove(filename)
+async def process_values(type_of_sum):
+    while True:
+        if type_of_sum == 1:
+            if temperature_queue.qsize() == 0:
+                temperature_queue.task_done()
+                break
+            else:
+                value = await temperature_queue.get()
+                global temperature_sum
+                temperature_sum += value
+        elif type_of_sum == 2:
+            if humidity_queue.qsize() == 0:
+                humidity_queue.task_done()
+                break
+            else:
+                value = await humidity_queue.get()
+                global humidity_sum
+                humidity_sum += value
+
+
+async def write_results(temp_sum, hum_sum):
+    with open('tp3_results.txt', 'w') as f:
+        average_temperature = temp_sum / 100000
+        average_humidity = hum_sum / 100000
+        f.write(f"Average Temperature: {average_temperature}\n")
+        f.write(f"Average Humidity: {average_humidity}\n")
 
 
 async def main():
-    directory = ""
-    asyncio.run(read_files_in_directory(directory))
+    directory_path = "C:/Users/jferr/Desktop/PA/TP3/weather_files"
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_FILES)
+
+    file_tasks = []
+    task = asyncio.create_task(monitor_progress())
+    file_tasks.append(task)
+    for filename in os.listdir(directory_path):
+        full_path = os.path.join(directory_path, filename)
+        task = asyncio.create_task(process_file(full_path, temperature_queue, humidity_queue, semaphore))
+        file_tasks.append(task)
+
+    await asyncio.gather(*file_tasks)
+
+    value_tasks = []
+    for _ in range(5):
+        task = asyncio.create_task(process_values(1))
+        value_tasks.append(task)
+    for _ in range(5):
+        task = asyncio.create_task(process_values(2))
+        value_tasks.append(task)
+
+    await asyncio.gather(*value_tasks)
+    for i in range(10):
+        value_tasks[i].cancel()
+
+    await write_results(temperature_sum, humidity_sum)
 
 
-if __name__ == "__main__":
-    main()
+asyncio.run(main())
