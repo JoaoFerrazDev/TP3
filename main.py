@@ -30,7 +30,7 @@ async def process_file(path, temp_queue, hum_queue, sem):
 
 async def monitor_progress():
     while True:
-        num_files = len(os.listdir('C:/Users/jferr/Desktop/PA/TP3/weather_files'))
+        num_files = len(os.listdir('C:/Users/joao.ferraz/IdeaProjects/TP3/weather_files'))
         print(f"There are {num_files} files left to process.")
         await asyncio.sleep(1)
         if num_files == 0:
@@ -57,16 +57,18 @@ async def process_values(type_of_sum):
                 humidity_sum += value
 
 
-async def write_results(temp_sum, hum_sum):
+async def write_results(temp_sum, hum_sum, total_temp, total_hum):
     with open('tp3_results.txt', 'w') as f:
-        average_temperature = temp_sum / 100000
-        average_humidity = hum_sum / 100000
+        average_temperature = temp_sum / total_temp
+        average_humidity = hum_sum / total_hum
         f.write(f"Average Temperature: {average_temperature}\n")
         f.write(f"Average Humidity: {average_humidity}\n")
+        f.write(f"Total Temperature: {temp_sum}\n")
+        f.write(f"Total Humidity: {hum_sum}\n")
 
 
 async def main():
-    directory_path = "C:/Users/jferr/Desktop/PA/TP3/weather_files"
+    directory_path = "C:/Users/joao.ferraz/IdeaProjects/TP3/weather_files"
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_FILES)
 
     file_tasks = []
@@ -78,6 +80,9 @@ async def main():
         file_tasks.append(task)
 
     await asyncio.gather(*file_tasks)
+
+    total_temperatures = temperature_queue.qsize()
+    total_humidity = humidity_queue.qsize()
 
     value_tasks = []
     for _ in range(5):
@@ -91,7 +96,7 @@ async def main():
     for i in range(10):
         value_tasks[i].cancel()
 
-    await write_results(temperature_sum, humidity_sum)
+    await write_results(temperature_sum, humidity_sum, total_temperatures, total_humidity)
 
 
 asyncio.run(main())
